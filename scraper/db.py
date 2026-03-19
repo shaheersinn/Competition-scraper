@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -70,8 +69,8 @@ class Database:
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               case_id INTEGER NOT NULL,
               party_name TEXT NOT NULL,
-              party_role TEXT,
-              UNIQUE(case_id, party_name, COALESCE(party_role, '')),
+              party_role TEXT NOT NULL DEFAULT '',
+              UNIQUE(case_id, party_name, party_role),
               FOREIGN KEY(case_id) REFERENCES cases(id)
             );
             """
@@ -80,15 +79,36 @@ class Database:
 
     def _init_sources(self) -> None:
         rows = [
-            ("competition_tribunal", "https://decisions.ct-tc.gc.ca", "Competition Tribunal decisions and case documents"),
-            ("competition_tribunal_summaries", "https://www.ct-tc.gc.ca", "Competition Tribunal decision summaries"),
-            ("competition_bureau_rtp", "https://competition-bureau.canada.ca", "Restrictive trade practices cases and outcomes"),
-            ("competition_bureau_dmp", "https://competition-bureau.canada.ca", "Deceptive marketing practices cases and outcomes"),
-            ("canlii_optional", "https://www.canlii.org", "Optional discovery of competition-law-related court decisions"),
+            (
+                "competition_tribunal",
+                "https://decisions.ct-tc.gc.ca",
+                "Competition Tribunal decisions and case documents",
+            ),
+            (
+                "competition_tribunal_summaries",
+                "https://www.ct-tc.gc.ca",
+                "Competition Tribunal decision summaries",
+            ),
+            (
+                "competition_bureau_rtp",
+                "https://competition-bureau.canada.ca",
+                "Restrictive trade practices cases and outcomes",
+            ),
+            (
+                "competition_bureau_dmp",
+                "https://competition-bureau.canada.ca",
+                "Deceptive marketing practices cases and outcomes",
+            ),
+            (
+                "canlii_optional",
+                "https://www.canlii.org",
+                "Optional discovery of competition-law-related court decisions",
+            ),
         ]
         cur = self.conn.cursor()
         cur.executemany(
-            "INSERT OR IGNORE INTO sources(name, base_url, notes) VALUES (?, ?, ?)", rows
+            "INSERT OR IGNORE INTO sources(name, base_url, notes) VALUES (?, ?, ?)",
+            rows,
         )
         self.conn.commit()
 
@@ -183,9 +203,10 @@ class Database:
         self.conn.commit()
 
     def add_parties(self, case_id: int, parties: Iterable[PartyRecord]) -> None:
-        rows = [(case_id, p.party_name, p.party_role) for p in parties]
+        rows = [(case_id, p.party_name, p.party_role or '') for p in parties]
         self.conn.executemany(
-            "INSERT OR IGNORE INTO parties(case_id, party_name, party_role) VALUES (?, ?, ?)", rows
+            "INSERT OR IGNORE INTO parties(case_id, party_name, party_role) VALUES (?, ?, ?)",
+            rows,
         )
         self.conn.commit()
 

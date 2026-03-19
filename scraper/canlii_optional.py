@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+
 from bs4 import BeautifulSoup
 
-from .models import CaseRecord, DocumentRecord
-from .utils import abs_url, download_file, filename_from_url, safe_get, session, slugify
+from .models import CaseRecord
+from .utils import abs_url, safe_get, session
 
 SEARCHES = [
     "https://www.canlii.org/en/#search/type=decision&text=%22Competition%20Act%22",
@@ -13,6 +14,7 @@ SEARCHES = [
 
 
 def scrape_canlii_optional(downloads_dir: str):
+    _ = downloads_dir
     s = session()
     results = []
     for search_url in SEARCHES:
@@ -29,7 +31,7 @@ def scrape_canlii_optional(downloads_dir: str):
             case_url = abs_url("https://www.canlii.org", href)
             source_case_id = href.strip("/")
             text = title
-            year_match = re.search(r"\b(19|20)\d{2}\b", text)
+            year_match = re.search(r"(19|20)\d{2}", text)
             year = int(year_match.group(0)) if year_match else None
             rec = CaseRecord(
                 source="canlii_optional",

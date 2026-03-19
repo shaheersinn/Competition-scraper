@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -12,7 +11,6 @@ from .models import CaseRecord, DocumentRecord, PartyRecord
 from .utils import abs_url, download_file, filename_from_url, session, slugify
 
 TRIBUNAL_BASE = "https://decisions.ct-tc.gc.ca"
-SUMMARIES_URL = "https://www.ct-tc.gc.ca/en/cases/decision-summaries.html"
 
 
 def _item_id(url: str) -> str:
@@ -48,8 +46,20 @@ def _parse_parties(title: str) -> list[PartyRecord]:
     parties = []
     if " v. " in title:
         left, right = title.split(" v. ", 1)
-        parties.append(PartyRecord(source_case_id="", party_name=left.strip(), party_role="applicant/appellant"))
-        parties.append(PartyRecord(source_case_id="", party_name=right.strip(), party_role="respondent"))
+        parties.append(
+            PartyRecord(
+                source_case_id="",
+                party_name=left.strip(),
+                party_role="applicant/appellant",
+            )
+        )
+        parties.append(
+            PartyRecord(
+                source_case_id="",
+                party_name=right.strip(),
+                party_role="respondent",
+            )
+        )
     return parties
 
 
@@ -58,7 +68,11 @@ def _parse_case_page(url: str, downloads_dir: str):
     resp = s.get(url, timeout=120)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "lxml")
-    title = soup.title.get_text(" ", strip=True).replace(" - Competition Tribunal", "").strip() if soup.title else url
+    title = (
+        soup.title.get_text(" ", strip=True).replace(" - Competition Tribunal", "").strip()
+        if soup.title
+        else url
+    )
     text = soup.get_text("\n", strip=True)
     year_match = re.search(r"\b(19|20)\d{2}\b", text)
     year = int(year_match.group(0)) if year_match else None
@@ -74,7 +88,12 @@ def _parse_case_page(url: str, downloads_dir: str):
         raw={"source_url": url},
     )
     docs = []
-    case_folder = Path(downloads_dir) / "competition_tribunal" / str(year or "unknown") / rec.source_case_id
+    case_folder = (
+        Path(downloads_dir)
+        / "competition_tribunal"
+        / str(year or "unknown")
+        / rec.source_case_id
+    )
     for a in soup.select("a[href]"):
         href = a.get("href")
         full = abs_url(url, href)
@@ -110,8 +129,8 @@ def _parse_case_page(url: str, downloads_dir: str):
                     )
                 )
     parties = _parse_parties(title)
-    for p in parties:
-        p.source_case_id = rec.source_case_id
+    for party in parties:
+        party.source_case_id = rec.source_case_id
     return rec, docs, parties
 
 
