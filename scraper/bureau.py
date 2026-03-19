@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import re
+
 from bs4 import BeautifulSoup
 
 from .models import CaseRecord, DocumentRecord
-from .utils import abs_url, safe_get, session
+from .utils import safe_get, session
 
-RTP_URL = "https://competition-bureau.canada.ca/restrictive-trade-practices/cases-and-outcomes/restrictive-trade-practices-cases-and-outcomes?wbdisable=true"
-DMP_URL = "https://competition-bureau.canada.ca/en/deceptive-marketing-practices/cases-and-outcomes?wbdisable=true"
+RTP_URL = (
+    "https://competition-bureau.canada.ca/restrictive-trade-practices/"
+    "cases-and-outcomes/restrictive-trade-practices-cases-and-outcomes?wbdisable=true"
+)
+DMP_URL = (
+    "https://competition-bureau.canada.ca/en/deceptive-marketing-practices/"
+    "cases-and-outcomes?wbdisable=true"
+)
 
 
 def _parse_table(url: str, source_name: str):
@@ -27,7 +34,7 @@ def _parse_table(url: str, source_name: str):
             continue
         parts = line.split(" ")
         date_public = parts[0]
-        summary = line[len(date_public) :].strip()
+        summary = line[len(date_public):].strip()
         title = summary[:180]
         source_case_id = f"{source_name}:{date_public}:{hash(line)}"
         rec = CaseRecord(
