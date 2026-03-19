@@ -1,0 +1,70 @@
+name: Scrape Canadian Competition Law Cases
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_year:
+        description: "Start year"
+        required: false
+        default: "1986"
+      end_year:
+        description: "End year"
+        required: false
+        default: "2026"
+      enable_canlii:
+        description: "Enable optional CanLII source"
+        required: false
+        default: "false"
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install chromium
+
+      - name: Run scraper
+        run: |
+          mkdir -p data downloads artifacts
+          python -m scraper.main \
+            --start-year "${{ github.event.inputs.start_year || '1986' }}" \
+            --end-year "${{ github.event.inputs.end_year || '2026' }}" \
+            --db-path data/competition_law_cases.db \
+            --downloads-dir downloads \
+            --csv-path artifacts/cases.csv \
+            --jsonl-path artifacts/cases.jsonl \
+            --enable-canlii "${{ github.event.inputs.enable_canlii || 'false' }}"
+
+      - name: Upload database and exports
+        uses: actions/upload-artifact@v4
+        with:
+          name: competition-law-data
+          path: |
+            data/competition_law_cases.db
+            artifacts/cases.csv
+            artifacts/cases.jsonl
+            artifacts/documents.csv
+            artifacts/documents.jsonl
+            artifacts/sources.csv
+
+      - name: Upload PDFs
+        uses: actions/upload-artifact@v4
+        with:
+          name: competition-law-pdfs
+          path: downloads/
+          if-no-files-found: warn
