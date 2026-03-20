@@ -20,7 +20,6 @@ class CaseRecord:
     language: str | None = None
     status: str | None = None
     summary: str | None = None
-    # BUG FIX: full_text was completely missing — decisions were never stored
     full_text: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -37,7 +36,6 @@ class DocumentRecord:
     mime_type: str | None = None
     sha256: str | None = None
     file_size: int | None = None
-    # BUG FIX: extracted PDF text was never stored
     extracted_text: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -47,3 +45,50 @@ class PartyRecord:
     source_case_id: str
     party_name: str
     party_role: str | None = None
+
+
+@dataclass
+class ReferenceDocument:
+    """
+    A standalone reference document (NOT a court case).
+
+    category / sub_category map to the download folder hierarchy:
+        downloads/
+          enforcement/
+            release/            Bureau press releases
+            consent-order/      Consent agreements & orders
+            rss/                Live RSS feed items
+          market-study/
+            grocery-retail/
+            digital-advertising/
+            real-estate/
+            general/
+          stats/
+            industry-concentration/   StatsCan NAICS data
+            telecom/                  CRTC monitoring reports
+            banking/                  OSFI financial data
+            airlines/                 Transport Canada air stats
+            grocery/                  Retail Council data
+          legal/
+            act/                Competition Act full text
+            rules/              Competition Tribunal Rules
+            guidelines/         Bureau guidelines & bulletins
+            key-decision/       Defining case law (Martin 2026 etc.)
+          consumer/
+            complaints/         Complaint datasets
+            open-data/          Open Government Canada CSVs/JSONs
+    """
+    category: str
+    sub_category: str | None
+    title: str
+    source_url: str
+    local_path: str | None = None
+    file_type: str | None = None      # "pdf", "csv", "json", "html", "xml"
+    publisher: str | None = None
+    published_date: str | None = None
+    description: str | None = None
+    extracted_text: str | None = None
+    sha256: str | None = None
+    file_size: int | None = None
+    mime_type: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)

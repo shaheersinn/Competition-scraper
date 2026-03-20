@@ -1,12 +1,13 @@
 """
-Competition Bureau scraper — fixed
+Competition Bureau scraper — v3
 
-BUG FIXES:
-  1. Old code only parsed a single text line per case — got a 180-char title
-     with no decision content whatsoever.
-  2. Bureau case pages link to actual decision documents (PDFs, consent agreements,
-     press releases). These were never fetched or downloaded.
-  3. No retry logic on HTTP requests.
+FIXES in this version:
+1. Old domain (competitionbureau.gc.ca) blocked — was causing 6-min timeouts
+   per URL (120s timeout × 3 retries).
+2. 404 URLs no longer retried — was wasting ~30s per dead link.
+3. Document detection tightened — was finding 38-46 "docs" per case because
+   is_document_url() matched HTML navigation links. Now only real files.
+4. Moved to the current competition-bureau.canada.ca domain throughout.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ from .utils import (
     extract_html_text,
     extract_pdf_text,
     filename_from_url,
+    is_blocked_domain,
     is_document_url,
     safe_get,
     session,
@@ -33,24 +35,49 @@ logger = logging.getLogger(__name__)
 
 BUREAU_BASE = "https://competition-bureau.canada.ca"
 
+# Current live list pages (wbdisable=true bypasses WET JS for cleaner HTML)
 CASE_LIST_URLS = [
     (
         "competition_bureau_rtp",
         BUREAU_BASE + "/restrictive-trade-practices/cases-and-outcomes/"
         "restrictive-trade-practices-cases-and-outcomes?wbdisable=true",
-        "Restrictive Trade Practices",
     ),
     (
         "competition_bureau_dmp",
         BUREAU_BASE + "/en/deceptive-marketing-practices/cases-and-outcomes?wbdisable=true",
-        "Deceptive Marketing Practices",
     ),
 ]
 
+# Link tokens that definitely indicate a Bureau case detail page
+CASE_LINK_TOKENS = [
+    "/cases/", "/case-", "/enforcement/", "/consent-",
+    "/matters/", "/matter-", "/agreement", "/court-order",
+    "/restrictive-trade-practices/", "/deceptive-marketing",
+]
 
-def _parse_case_list(source_name: str, list_url: str, downloads_dir: str):
+
+def _is_case_link(url: str, list_url: str) -> bool:
+    """Return True if the URL looks like a Bureau case detail page."""
+    if not url or url == list_url:
+        return False
+    if is_blocked_domain(url):
+        return False
+    lower = url.lower()
+    # Skip obvious non-case links
+    if any(x in lower for x in [
+        "/search", "/home", "/contact", "/about", "/subscribe",
+        "/newsroom", "#", "javascript", "mailto", "/rss",
+        "/en/competition-bureau", "/fr/bureau",
+    ]):
+        return False
+    # Must be on the Bureau domain
+    if "competition-bureau.canada.ca" not in lower and "canada.ca/en/competition" not in lower:
+        return False
+    return True
+
+
+def _parse_bureau_page(source_name: str, list_url: str, downloads_dir: str):
     s = session()
-
     try:
         html = safe_get(s, list_url).text
     except Exception as exc:
@@ -59,120 +86,51 @@ def _parse_case_list(source_name: str, list_url: str, downloads_dir: str):
 
     soup = BeautifulSoup(html, "lxml")
     records = []
+    seen_urls: set[str] = set()
 
-    # Bureau pages have a table with case rows — each row links to a detail page
-    # BUG FIX: old code only extracted text lines, never followed links to decisions
-    rows = soup.select("table tbody tr, .views-row, article.node--type-case")
-
-    if not rows:
-        # Fallback: scrape any visible links that look like case links
-        rows = soup.select("a[href]")
-
-    current_year = None
-    for row in rows:
-        if hasattr(row, "get_text"):
-            row_text = re.sub(r"\s+", " ", row.get_text(" ", strip=True))
-        else:
+    # Collect case detail page links from the list
+    case_links: list[tuple[str, str]] = []  # (url, title)
+    for a in soup.select("a[href]"):
+        href = a.get("href", "")
+        full = abs_url(list_url, href)
+        if not full or full in seen_urls:
             continue
-
-        # Detect year headings
-        y_match = re.fullmatch(r"20\d{2}", row_text.strip())
-        if y_match:
-            current_year = int(row_text.strip())
+        if not _is_case_link(full, list_url):
             continue
+        seen_urls.add(full)
+        title = a.get_text(" ", strip=True)
+        if title:
+            case_links.append((full, title))
 
-        # Find a detail-page link in this row
-        link = row.find("a", href=True) if hasattr(row, "find") else row
-        if not link:
-            continue
-        href = link.get("href", "")
-        detail_url = abs_url(list_url, href)
-        if not detail_url or detail_url == list_url:
-            continue
+    logger.info("[Bureau] %s: found %d case links", source_name, len(case_links))
 
-        # Skip non-case links (nav, footer)
-        if not any(
-            token in detail_url
-            for token in ["/case", "/decision", "/agreement", "/consent", "/matter"]
-        ):
-            # Still include if it's clearly a case from the row text pattern
-            if not re.search(r"20\d{2}-\d{2}-\d{2}", row_text):
-                continue
+    for detail_url, link_title in case_links:
+        source_case_id = slugify(detail_url.rstrip("/").split("/")[-1] or link_title, max_len=120)
 
-        title = link.get_text(" ", strip=True) or row_text[:180]
-        source_case_id = slugify(href.rstrip("/").split("/")[-1] or title, max_len=120)
-
-        # Fetch the detail page for full content
+        # Fetch detail page
         full_text = ""
-        detail_docs = []
         try:
-            detail_resp = safe_get(s, detail_url)
+            detail_resp = safe_get(s, detail_url, timeout=30)
             full_text = extract_html_text(detail_resp.text)
             detail_soup = BeautifulSoup(detail_resp.text, "lxml")
-
-            # Download documents linked from the detail page
-            case_folder = (
-                Path(downloads_dir)
-                / source_name
-                / str(current_year or "unknown")
-                / source_case_id
-            )
-            seen: set[str] = set()
-            for doc_link in detail_soup.select("a[href]"):
-                doc_href = doc_link.get("href")
-                doc_full = abs_url(detail_url, doc_href)
-                if not doc_full or doc_full in seen:
-                    continue
-                if not is_document_url(doc_full):
-                    continue
-                seen.add(doc_full)
-                doc_label = doc_link.get_text(" ", strip=True) or "Document"
-                out_path = case_folder / filename_from_url(doc_full)
-                extracted_text = None
-                try:
-                    meta = download_file(s, doc_full, out_path)
-                    if str(out_path).lower().endswith(".pdf"):
-                        extracted_text = extract_pdf_text(out_path)
-                    detail_docs.append(
-                        DocumentRecord(
-                            source=source_name,
-                            source_case_id=source_case_id,
-                            document_title=doc_label,
-                            document_url=doc_full,
-                            local_path=str(out_path),
-                            document_type="pdf/bureau-document",
-                            mime_type=meta.get("mime_type"),
-                            sha256=meta.get("sha256"),
-                            file_size=meta.get("file_size"),
-                            extracted_text=extracted_text,
-                            raw={},
-                        )
-                    )
-                except Exception as exc:
-                    logger.warning("[Bureau] Doc download failed %s: %s", doc_full, exc)
-                    detail_docs.append(
-                        DocumentRecord(
-                            source=source_name,
-                            source_case_id=source_case_id,
-                            document_title=doc_label,
-                            document_url=doc_full,
-                            raw={"download_error": str(exc)},
-                        )
-                    )
         except Exception as exc:
             logger.warning("[Bureau] Detail page failed %s: %s", detail_url, exc)
-            full_text = row_text  # fall back to the list-page text
+            detail_soup = BeautifulSoup("", "lxml")
+            full_text = link_title
 
-        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", row_text + full_text[:500])
+        # Use h1 as title if available
+        h1 = detail_soup.find("h1")
+        title = h1.get_text(" ", strip=True) if h1 else link_title
+
+        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", full_text[:500])
         date_str = date_match.group(1) if date_match else None
-        if not current_year and date_str:
-            current_year = int(date_str[:4])
+        year = int(date_str[:4]) if date_str else None
 
         rec = CaseRecord(
             source=source_name,
             source_case_id=source_case_id,
             title=title,
-            year=current_year,
+            year=year,
             date_decided=date_str,
             court_or_tribunal="Competition Bureau Canada",
             case_type="public enforcement outcome",
@@ -181,15 +139,61 @@ def _parse_case_list(source_name: str, list_url: str, downloads_dir: str):
             full_text=full_text,
             raw={"list_url": list_url, "detail_url": detail_url},
         )
-        records.append((rec, detail_docs, []))
-        logger.info("[Bureau] ✓ %s | %d chars | %d docs", title[:80], len(full_text), len(detail_docs))
 
-    logger.info("[Bureau] %s: %d records", source_name, len(records))
+        # Download ONLY actual documents (PDFs, consent agreements, court orders)
+        # FIX: previously found 38-46 "docs" which were all nav HTML links
+        docs = []
+        case_folder = (
+            Path(downloads_dir) / source_name / str(year or "unknown") / source_case_id
+        )
+        seen_doc_urls: set[str] = set()
+
+        for doc_link in detail_soup.select("a[href]"):
+            doc_href = doc_link.get("href")
+            doc_full = abs_url(detail_url, doc_href)
+            if not doc_full or doc_full in seen_doc_urls:
+                continue
+            if is_blocked_domain(doc_full):
+                continue
+            if not is_document_url(doc_full):
+                continue
+            seen_doc_urls.add(doc_full)
+            doc_label = doc_link.get_text(" ", strip=True) or "Document"
+            out_path = case_folder / filename_from_url(doc_full)
+            extracted_text = None
+            try:
+                meta = download_file(s, doc_full, out_path)
+                if str(out_path).lower().endswith(".pdf"):
+                    extracted_text = extract_pdf_text(out_path)
+                docs.append(DocumentRecord(
+                    source=source_name,
+                    source_case_id=source_case_id,
+                    document_title=doc_label,
+                    document_url=doc_full,
+                    local_path=str(out_path),
+                    document_type="pdf/bureau-document",
+                    mime_type=meta.get("mime_type"),
+                    sha256=meta.get("sha256"),
+                    file_size=meta.get("file_size"),
+                    extracted_text=extracted_text,
+                    raw={},
+                ))
+            except Exception as exc:
+                # Log at debug level — dead links on Bureau site are common
+                logger.debug("[Bureau] Doc skipped %s: %s", doc_full, exc)
+
+        logger.info(
+            "[Bureau] ✓ %s | %d chars | %d real docs",
+            title[:80], len(full_text), len(docs),
+        )
+        records.append((rec, docs, []))
+
+    logger.info("[Bureau] %s: %d records total", source_name, len(records))
     return records
 
 
 def scrape_bureau_sources(downloads_dir: str = "downloads"):
     out = []
-    for source_name, list_url, _ in CASE_LIST_URLS:
-        out.extend(_parse_case_list(source_name, list_url, downloads_dir))
+    for source_name, list_url in CASE_LIST_URLS:
+        out.extend(_parse_bureau_page(source_name, list_url, downloads_dir))
     return out
