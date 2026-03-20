@@ -1,1 +1,1 @@
-__all__ = []
+# Competition Law Scraper

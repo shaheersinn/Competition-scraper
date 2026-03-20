@@ -15,6 +15,7 @@ class Database:
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
+        self._migrate()
         self._init_sources()
 
     def _init_schema(self) -> None:
@@ -43,6 +44,7 @@ class Database:
               language TEXT,
               status TEXT,
               summary TEXT,
+              full_text TEXT,
               case_url TEXT NOT NULL,
               scraped_at TEXT NOT NULL,
               raw_json TEXT,
@@ -60,6 +62,7 @@ class Database:
               sha256 TEXT,
               file_size INTEGER,
               mime_type TEXT,
+              extracted_text TEXT,
               scraped_at TEXT NOT NULL,
               raw_json TEXT,
               UNIQUE(case_id, document_url),
@@ -73,8 +76,25 @@ class Database:
               UNIQUE(case_id, party_name, party_role),
               FOREIGN KEY(case_id) REFERENCES cases(id)
             );
+            CREATE VIRTUAL TABLE IF NOT EXISTS cases_fts
+              USING fts5(title, full_text, summary, content='cases', content_rowid='id');
             """
         )
+        self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add new columns to existing databases without destroying data."""
+        cur = self.conn.cursor()
+        existing_cols = {
+            row[1] for row in cur.execute("PRAGMA table_info(cases)")
+        }
+        if "full_text" not in existing_cols:
+            cur.execute("ALTER TABLE cases ADD COLUMN full_text TEXT")
+        doc_cols = {
+            row[1] for row in cur.execute("PRAGMA table_info(documents)")
+        }
+        if "extracted_text" not in doc_cols:
+            cur.execute("ALTER TABLE documents ADD COLUMN extracted_text TEXT")
         self.conn.commit()
 
     def _init_sources(self) -> None:
@@ -100,9 +120,19 @@ class Database:
                 "Deceptive marketing practices cases and outcomes",
             ),
             (
+                "federal_court",
+                "https://decisions.fca-caf.gc.ca",
+                "Federal Court competition-related decisions",
+            ),
+            (
+                "supreme_court",
+                "https://decisions.scc-csc.ca",
+                "Supreme Court of Canada competition-related decisions",
+            ),
+            (
                 "canlii_optional",
                 "https://www.canlii.org",
-                "Optional discovery of competition-law-related court decisions",
+                "CanLII indexed competition-law decisions",
             ),
         ]
         cur = self.conn.cursor()
@@ -123,8 +153,8 @@ class Database:
             INSERT INTO cases (
               source, source_case_id, case_number, title, year, date_filed, date_decided,
               court_or_tribunal, case_type, neutral_citation, language, status, summary,
-              case_url, scraped_at, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              full_text, case_url, scraped_at, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source, source_case_id) DO UPDATE SET
               case_number=excluded.case_number,
               title=excluded.title,
@@ -137,6 +167,7 @@ class Database:
               language=excluded.language,
               status=excluded.status,
               summary=excluded.summary,
+              full_text=excluded.full_text,
               case_url=excluded.case_url,
               scraped_at=excluded.scraped_at,
               raw_json=excluded.raw_json
@@ -155,6 +186,7 @@ class Database:
                 case.language,
                 case.status,
                 case.summary,
+                case.full_text,
                 case.case_url,
                 self._now(),
                 json.dumps(case.raw, ensure_ascii=False),
@@ -172,8 +204,9 @@ class Database:
             """
             INSERT INTO documents (
               case_id, source, document_title, document_type, document_date,
-              document_url, local_path, sha256, file_size, mime_type, scraped_at, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              document_url, local_path, sha256, file_size, mime_type,
+              extracted_text, scraped_at, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(case_id, document_url) DO UPDATE SET
               document_title=excluded.document_title,
               document_type=excluded.document_type,
@@ -182,6 +215,7 @@ class Database:
               sha256=excluded.sha256,
               file_size=excluded.file_size,
               mime_type=excluded.mime_type,
+              extracted_text=excluded.extracted_text,
               scraped_at=excluded.scraped_at,
               raw_json=excluded.raw_json
             """,
@@ -196,6 +230,7 @@ class Database:
                 doc.sha256,
                 doc.file_size,
                 doc.mime_type,
+                doc.extracted_text,
                 self._now(),
                 json.dumps(doc.raw, ensure_ascii=False),
             ),
@@ -203,7 +238,7 @@ class Database:
         self.conn.commit()
 
     def add_parties(self, case_id: int, parties: Iterable[PartyRecord]) -> None:
-        rows = [(case_id, p.party_name, p.party_role or '') for p in parties]
+        rows = [(case_id, p.party_name, p.party_role or "") for p in parties]
         self.conn.executemany(
             "INSERT OR IGNORE INTO parties(case_id, party_name, party_role) VALUES (?, ?, ?)",
             rows,

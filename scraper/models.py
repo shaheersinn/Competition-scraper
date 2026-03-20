@@ -20,6 +20,8 @@ class CaseRecord:
     language: str | None = None
     status: str | None = None
     summary: str | None = None
+    # BUG FIX: full_text was completely missing — decisions were never stored
+    full_text: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -35,6 +37,8 @@ class DocumentRecord:
     mime_type: str | None = None
     sha256: str | None = None
     file_size: int | None = None
+    # BUG FIX: extracted PDF text was never stored
+    extracted_text: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
